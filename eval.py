@@ -1,173 +1,119 @@
-"""
-LLM-based dataset standardization for Unitxt.
-Uses a small LLM to automatically map HuggingFace datasets to Unitxt format.
-"""
+"""Evaluation functions for Unitxt LLM Agent."""
+
+import os
 import json
-import torch
-from datasets import load_dataset, Dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from unitxt import get_from_catalog
-from unitxt.card import TaskCard
-from unitxt.loaders import LoadFromDictionary
-
-# Model configuration
-MODEL_ID = "google/gemma-3-1b-it"
-_tokenizer = None
-_model = None
+import pandas as pd
+from unitxt import load_dataset as unitxt_load
+from standardize import load_standardized_dataset
 
 
-def _load_model():
-    """Lazy load the LLM model."""
-    global _tokenizer, _model
-    if _tokenizer is None:
-        _tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
-        _model = AutoModelForCausalLM.from_pretrained(
-            MODEL_ID, dtype=torch.bfloat16, device_map="auto"
-        )
-    return _tokenizer, _model
+# Fields inside task_data that are Unitxt metadata, not actual data columns
+UNITXT_METADATA_FIELDS = {'metadata', 'data_classification_policy'}
 
 
-def _infer_mapping(features: dict, sample_rows: list, instruction: str = None) -> dict:
-    """Use LLM to infer the mapping from dataset columns to Unitxt fields."""
-    tokenizer, model = _load_model()
-    column_names = list(features.keys())
+def extract_unitxt_standardized(unitxt_df: pd.DataFrame) -> pd.DataFrame:
+    """Extract clean standardized data from Unitxt's task_data column."""
+    if 'task_data' not in unitxt_df.columns:
+        return pd.DataFrame()
     
-    # Zero-shot prompt: test LLM's raw Unitxt knowledge
-    prompt_template = f"""You are an expert in the 'Unitxt' library for NLP dataset standardization.
-
-DATASET INFO:
-- Columns: {column_names}
-- Types: {json.dumps({k: str(v) for k, v in features.items()})}
-- Samples: {json.dumps(sample_rows[:5], indent=2, default=str)}
-{f'- User hint: {instruction}' if instruction else ''}
-
-Analyze the dataset columns and map them to the corresponding Unitxt task fields based on your knowledge of the library.
-Infer the NLP task type and create a mapping from raw columns to Unitxt fields.
-
-Return a JSON object: {{"task": "<task_type>", "<unitxt_field>": "<column_name>", ...}}
-Use EXACT column names from: {column_names}
-
-Return ONLY valid JSON:"""
-    
-    # Direct prompt usage (Removed gepa optimization)
-    prompt = prompt_template
-    
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-    outputs = model.generate(**inputs, max_new_tokens=150, do_sample=False)
-    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    
-    # Extract JSON from response
-    try:
-        json_start = response.rfind("{")
-        json_end = response.rfind("}") + 1
-        if json_start >= 0 and json_end > json_start:
-            parsed = json.loads(response[json_start:json_end])
-            if parsed and "task" in parsed and len(parsed) > 1:
-                return parsed
-    except (json.JSONDecodeError, ValueError):
-        pass
-    
-    # Fallback: heuristic-based detection
-    cols = set(features.keys())
-    if cols & {"premise", "sentence1"}:
-        return {"task": "nli", "text_a": "premise" if "premise" in cols else "sentence1",
-                "text_b": "hypothesis" if "hypothesis" in cols else "sentence2", "label": "label"}
-    if "label" in cols:
-        text_col = next((c for c in cols if c in ["text", "sentence", "content"]), list(cols)[0])
-        return {"task": "classification", "text": text_col, "label": "label"}
-    return {"task": "generation", "input": list(cols)[0], "output": list(cols)[-1]}
-
-
-def _score_mapping(dataset: Dataset, mapping: dict, n: int = 5) -> float:
-    """Score the validity of a mapping by checking N sample rows."""
-    try:
-        samples = list(dataset.take(n)) if hasattr(dataset, 'take') else dataset[:n]
-        if isinstance(samples, dict):
-            samples = [dict(zip(samples.keys(), vals)) for vals in zip(*samples.values())]
+    rows = []
+    for task_data in unitxt_df['task_data']:
+        if isinstance(task_data, str):
+            task_data = json.loads(task_data)
         
-        valid = 0
-        required_fields = [v for k, v in mapping.items() if k != "task"]
-        
-        for row in samples:
-            if all(field in row and row[field] is not None for field in required_fields):
-                valid += 1
-        
-        return valid / n
-    except Exception:
-        return 0.0
-
-
-def _generate_code(mapping: dict) -> str:
-    """Generate Unitxt preprocess_steps code string directly from LLM output (no correction)."""
-    steps = []
-    for field_name, source_col in mapping.items():
-        if field_name == "task" or not isinstance(source_col, str):
-            continue
-        # Output exactly what LLM suggested - no field name correction
-        if source_col != field_name:
-            steps.append(f"Rename(field='{source_col}', to_field='{field_name}')")
+        clean_row = {k: v for k, v in task_data.items() if k not in UNITXT_METADATA_FIELDS}
+        rows.append(clean_row)
     
-    return ", ".join(steps) if steps else "# No rename steps needed"
+    return pd.DataFrame(rows)
 
 
-def standardize(dataset, instruction: str = None) -> TaskCard:
+def extract_task_data_fields(unitxt_df: pd.DataFrame) -> set:
+    """Extract the actual data field names from Unitxt's task_data column."""
+    if 'task_data' not in unitxt_df.columns:
+        return set()
+    
+    sample = unitxt_df['task_data'].iloc[0]
+    if isinstance(sample, str):
+        sample = json.loads(sample)
+    
+    return {k for k in sample.keys() if k not in UNITXT_METADATA_FIELDS}
+
+
+def apply_llm_mapping(raw_df: pd.DataFrame, mapping: dict) -> pd.DataFrame:
+    """Apply LLM mapping to raw dataset and return standardized DataFrame."""
+    rename_dict = {
+        v: k for k, v in mapping.items() 
+        if k != "task" and isinstance(v, str) and v in raw_df.columns
+    }
+    
+    df_standardized = raw_df.rename(columns=rename_dict)
+    
+    mapped_cols = list(rename_dict.values())
+    if mapped_cols:
+        df_standardized = df_standardized[mapped_cols]
+    
+    return df_standardized
+
+
+def compute_score(gt_fields: set, pred_fields: set) -> float:
+    """Jaccard Index between ground truth and predicted field sets."""
+    intersection = len(gt_fields & pred_fields)
+    union = len(gt_fields | pred_fields)
+    return intersection / union if union > 0 else 0.0
+
+
+def evaluate(hf_name: str, hf_config: str, card_id: str, save_dir: str = None, n_samples: int = 50) -> dict:
     """
-    Standardize a HuggingFace dataset into Unitxt format.
+    Evaluate LLM standardization against Unitxt ground truth.
     
     Args:
-        dataset: HF dataset name (str) or Dataset object
-        instruction: Optional instruction to guide the LLM mapping
+        hf_name: HuggingFace dataset name (e.g., "glue")
+        hf_config: Dataset config (e.g., "sst2")
+        card_id: Unitxt card ID (e.g., "sst2")
+        save_dir: Directory to save artifacts (optional)
+        n_samples: Number of samples to evaluate
     
     Returns:
-        TaskCard ready for Unitxt processing
+        dict with evaluation results
     """
-    # Load dataset if string
-    if isinstance(dataset, str):
-        ds = load_dataset(dataset, split="train", streaming=True)
-    else:
-        ds = dataset
+    # Step A: LLM Processing
+    llm_result = load_standardized_dataset(hf_name, config=hf_config)
+    mapping = llm_result.get("mapping", {})
     
-    # Get features and samples
-    features = ds.features
-    samples = list(ds.take(5))
+    ds_raw = llm_result.get("dataset")
+    if not ds_raw:
+        raise ValueError("Agent failed to return a valid dataset object.")
     
-    # Infer mapping with LLM
-    mapping = _infer_mapping(features, samples, instruction)
+    df_raw = pd.DataFrame(list(ds_raw.take(n_samples)))
+    df_llm = apply_llm_mapping(df_raw, mapping)
     
-    # Score the mapping
-    score = _score_mapping(ds, mapping)
-    print(f"Mapping: {mapping} (score: {score:.2f})")
+    llm_fields = {k for k in mapping.keys() if k != "task"}
+
+    # Step B: Unitxt Ground Truth
+    recipe = f"card=cards.{card_id}"
+    gt_data = unitxt_load(recipe, split="train", streaming=True)
+    df_gt_raw = pd.DataFrame(list(gt_data.take(n_samples)))
     
-    if score < 0.5:
-        print("Warning: Low confidence mapping. Consider providing an instruction.")
-    
-    # Create Unitxt card based on task type
-    task_type = mapping.get("task", "classification")
-    
-    # Map to Unitxt task (using correct catalog paths)
-    task_mapping = {
-        "classification": "tasks.classification.binary",
-        "nli": "tasks.classification.multi_class",
-        "generation": "tasks.generation",
-    }
-    
-    task = get_from_catalog(task_mapping.get(task_type, "tasks.classification"))
-    
+    df_gt = extract_unitxt_standardized(df_gt_raw)
+    gt_fields = extract_task_data_fields(df_gt_raw)
+
+    # Step C: Compute Score
+    score = compute_score(gt_fields, llm_fields)
+
+    # Step D: Save artifacts (optional)
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+        df_llm.to_csv(f"{save_dir}/llm_standardized.csv", index=False)
+        df_gt.to_csv(f"{save_dir}/unitxt_standardized.csv", index=False)
+
     return {
+        "dataset": card_id,
+        "score": round(score, 3),
+        "llm_fields": sorted(llm_fields),
+        "gt_fields": sorted(gt_fields),
         "mapping": mapping,
-        "code": _generate_code(mapping),
-        "score": score,
-        "dataset": ds,
+        "eval_card": llm_result.get("code", ""),
+        "df_llm": df_llm,
+        "df_gt": df_gt,
+        "error": None
     }
-
-
-def load_standardized_dataset(dataset_name: str, config: str = None, instruction: str = None):
-    """
-    Convenience function to load and standardize a dataset in one call.
-    """
-    if config:
-        ds = load_dataset(dataset_name, config, split="train", streaming=True)
-    else:
-        ds = load_dataset(dataset_name, split="train", streaming=True)
-    
-    return standardize(ds, instruction)
