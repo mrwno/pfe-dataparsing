@@ -2,39 +2,86 @@
 
 ## Project Overview
 
-In the era of ML, preparing data is a massive bottleneck.
-Every dataset has a unique schema (e.g., `tweet_text` vs. `review_body`, `target` vs. `label`), making it difficult to train a single model on multiple tasks without manual engineering.
+Every HuggingFace dataset has a unique schema (`tweet_text`, `review_body`, `sentence1`, …), making it hard to train a single model across multiple tasks without manual mapping work.
 
-**The Goal:**
-This project explores an Agentic Approach to automate data preparation. Instead of writing manual rules for every new dataset, we use a small, efficient LLM (and later famous models) to:
+This project automates that mapping step using LLMs. Given a raw dataset, the system:
 
-1. **Analyze** the raw columns of a dataset.
-2. **Infer** the underlying NLP task (Classification, NLI, QA, etc.).
-3. **Map** the raw columns to the standard **Unitxt** schema (e.g., `text_a`, `label`).
+1. **Analyzes** a small sample of the raw columns.
+2. **Infers** the underlying NLP task (classification, NLI, translation, …).
+3. **Maps** the raw columns to a standardized [Unitxt](https://github.com/IBM/unitxt) schema, including rich metadata:
+   - column renames (e.g. `sentence` → `texy`)
+   - text-type annotations (e.g. `sentence_type = "sentence"`)
+   - class label names (e.g. `classes = ["negative", "positive"]`)
+   - task type (e.g. `type_of_class = "sentiment"`)
+   - integer-to-text label conversion (e.g. `0` → `"negative"`)
 
-We compare this Agentic method against traditional baselines (Keyword Matching and Semantic Embeddings) to evaluate its robustness and accuracy.
+Two inference backends are supported: a **cloud API** (OpenRouter) and a **local HuggingFace model**.
 
 ---
 
-## Quick Start Guide
+## Project Structure
 
-Follow these steps to set up the environment and run the experiments.
+```
+pfe-dataparsing/
+├── standardize.py       # LLM inference logic: API (OpenRouter) + local (HuggingFace)
+├── eval.py              # Evaluation pipeline: apply mapping, compare vs. Unitxt ground truth
+├── test.py              # Test runner for API mode and local model mode
+├── baselines.py         # Keyword and embedding baseline algorithms
+├── experiments.ipynb    # Experiment notebook for running campaigns and visualizing results
+├── requirements.txt     # Python dependencies
+├── results/             # Outputs from the API-based runs
+└── results_local/       # Outputs from the local-model runs
+```
 
-### 1. Create a Virtual Environment
+---
 
-It is recommended to use a clean Python environment (Python 3.9+).
+## Setup
 
-### 3. Install Dependencies
-
-Install the required libraries.
+**Python 3.10+ is required.**
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Project Structure
+For the API backend, export your OpenRouter key:
 
-* `standardize.py`: Contains the **LLM Agent** logic (Gemma-2B) for schema inference.
-* `baselines.py`: Contains the Keyword and Embedding baseline algorithms.
-* `eval.py`: The evaluation pipeline comparing predictions vs. Unitxt Ground Truth.
-* `experiments.ipynb`: The main notebook for running the campaign and visualizing results.
+```bash
+export OPENROUTER_API_KEY="your_key_here"
+```
+
+---
+
+
+## Running the Evaluation
+
+```bash
+# API mode (OpenRouter, requires OPENROUTER_API_KEY)
+python test.py --mode api
+
+# Local model mode (downloads Qwen/Qwen3-0.6B on first run)
+python test.py --mode local
+```
+
+Results are saved as CSV files:
+
+| Mode  | Output directory    | Summary file                              |
+|-------|---------------------|-------------------------------------------|
+| API   | `results/`          | `results/evaluation_results.csv`          |
+| Local | `results_local/`    | `results_local/evaluation_results_local.csv` |
+
+Each dataset directory also contains `llm_standardized.csv` and `unitxt_standardized.csv` for side-by-side comparison.
+
+---
+
+
+## Dependencies
+
+| Package | Purpose |
+|---------|---------|
+| `unitxt` | Ground-truth cards and task definitions |
+| `datasets` | HuggingFace dataset loading |
+| `transformers` + `torch` + `accelerate` | Local model inference |
+| `openai` | OpenRouter API client |
+| `sentence-transformers` | Embedding baseline |
+| `pandas` | Result DataFrames |
+| `dspy-ai` | (planned) DSPy-based agent experiments |

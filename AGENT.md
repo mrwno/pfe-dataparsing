@@ -12,7 +12,7 @@
 * **Language:** Python 3.9+
 * **Core Framework:** `unitxt` (IBM Research) -> Used for defining "Cards" (dataset mappings) and templates.
 * **Data Handling:** `datasets` (Hugging Face), `pandas`.
-* **LLM Inference:** `transformers` (Local: Gemma-3-270m-it) or API.
+* **LLM Inference:** `transformers` (Local: google/gemma-3-4b-it) or API.
 * **Evaluation & Tracking:** Save the result in a Dataframe format and then save it in a CSV file.
 * **Baselines:** `sentence-transformers` (for semantic matching baselines).
 

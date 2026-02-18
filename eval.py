@@ -4,15 +4,22 @@ import os
 import json
 import pandas as pd
 from unitxt import load_dataset as unitxt_load
-from standardize import load_standardized_dataset
+from standardize import load_standardized_dataset, load_standardized_dataset_local
 
 
-# Fields inside task_data that are Unitxt metadata, not actual data columns
 UNITXT_METADATA_FIELDS = {'metadata', 'data_classification_policy'}
 
 
 def extract_unitxt_standardized(unitxt_df: pd.DataFrame) -> pd.DataFrame:
-    """Extract clean standardized data from Unitxt's task_data column."""
+    """
+    Extract clean standardized data from Unitxt's task_data column.
+
+    Args:
+        unitxt_df: DataFrame containing Unitxt formatted data with task_data column.
+
+    Returns:
+        DataFrame with clean standardized data excluding metadata fields.
+    """
     if 'task_data' not in unitxt_df.columns:
         return pd.DataFrame()
     
@@ -28,7 +35,15 @@ def extract_unitxt_standardized(unitxt_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def extract_task_data_fields(unitxt_df: pd.DataFrame) -> set:
-    """Extract the actual data field names from Unitxt's task_data column."""
+    """
+    Extract the actual data field names from Unitxt's task_data column.
+
+    Args:
+        unitxt_df: DataFrame containing Unitxt formatted data with task_data column.
+
+    Returns:
+        Set of field names excluding metadata fields.
+    """
     if 'task_data' not in unitxt_df.columns:
         return set()
     
@@ -40,44 +55,88 @@ def extract_task_data_fields(unitxt_df: pd.DataFrame) -> set:
 
 
 def apply_llm_mapping(raw_df: pd.DataFrame, mapping: dict) -> pd.DataFrame:
-    """Apply LLM mapping to raw dataset and return standardized DataFrame."""
-    rename_dict = {
-        v: k for k, v in mapping.items() 
-        if k != "task" and isinstance(v, str) and v in raw_df.columns
+    """
+    Apply LLM mapping to raw dataset and return standardized DataFrame.
+
+    - Column references (value matches a raw column name) are renamed.
+    - Literal string values (e.g. text_type, type_of_class) are added as constant columns.
+    - Integer labels are converted to text using the classes list.
+    - The classes list is added as a string column.
+
+    Args:
+        raw_df: Raw DataFrame to be standardized.
+        mapping: Dictionary mapping standard field names to raw column names or literal values.
+
+    Returns:
+        Standardized DataFrame with renamed columns and injected metadata.
+    """
+    classes = mapping.get("classes", [])
+
+    # Entries whose value is a string that exists as a real column → rename
+    col_refs = {
+        v: k for k, v in mapping.items()
+        if k not in ("task", "classes") and isinstance(v, str) and v in raw_df.columns
     }
-    
-    df_standardized = raw_df.rename(columns=rename_dict)
-    
-    mapped_cols = list(rename_dict.values())
-    if mapped_cols:
-        df_standardized = df_standardized[mapped_cols]
-    
-    return df_standardized
+    # Entries whose value is a string NOT in the dataset → inject as constant column
+    literals = {
+        k: v for k, v in mapping.items()
+        if k not in ("task", "classes") and isinstance(v, str) and v not in raw_df.columns
+    }
+
+    # Keep only referenced columns and rename them
+    df = raw_df[list(col_refs.keys())].rename(columns=col_refs)
+
+    # Convert integer labels to text class names
+    if "label" in df.columns and classes:
+        df["label"] = df["label"].map(
+            lambda x: classes[x] if isinstance(x, int) and 0 <= x < len(classes) else x
+        )
+
+    # Inject literal metadata as constant columns
+    for col, val in literals.items():
+        df[col] = val
+
+    # Inject classes as a string column
+    if classes:
+        df["classes"] = str(classes)
+
+    return df
 
 
 def compute_score(gt_fields: set, pred_fields: set) -> float:
-    """Jaccard Index between ground truth and predicted field sets."""
+    """
+    Jaccard Index between ground truth and predicted field sets.
+
+    Args:
+        gt_fields: Set of ground truth field names.
+        pred_fields: Set of predicted field names.
+
+    Returns:
+        Jaccard similarity score between 0.0 and 1.0.
+    """
     intersection = len(gt_fields & pred_fields)
     union = len(gt_fields | pred_fields)
     return intersection / union if union > 0 else 0.0
 
 
-def evaluate(hf_name: str, hf_config: str, card_id: str, save_dir: str = None, n_samples: int = 50) -> dict:
+def evaluate(hf_name: str, hf_config: str, card_id: str, save_dir: str = None, n_samples: int = 50, standardize_fn=None) -> dict:
     """
     Evaluate LLM standardization against Unitxt ground truth.
-    
+
     Args:
         hf_name: HuggingFace dataset name (e.g., "glue")
         hf_config: Dataset config (e.g., "sst2")
         card_id: Unitxt card ID (e.g., "sst2")
         save_dir: Directory to save artifacts (optional)
         n_samples: Number of samples to evaluate
-    
+        standardize_fn: Callable with signature (dataset_name, config) -> dict.
+                        Defaults to load_standardized_dataset (API-based).
+
     Returns:
         dict with evaluation results
     """
-    # Step A: LLM Processing
-    llm_result = load_standardized_dataset(hf_name, config=hf_config)
+    fn = standardize_fn or load_standardized_dataset
+    llm_result = fn(hf_name, config=hf_config)
     mapping = llm_result.get("mapping", {})
     
     ds_raw = llm_result.get("dataset")
@@ -89,7 +148,6 @@ def evaluate(hf_name: str, hf_config: str, card_id: str, save_dir: str = None, n
     
     llm_fields = {k for k in mapping.keys() if k != "task"}
 
-    # Step B: Unitxt Ground Truth
     recipe = f"card=cards.{card_id}"
     gt_data = unitxt_load(recipe, split="train", streaming=True)
     df_gt_raw = pd.DataFrame(list(gt_data.take(n_samples)))
@@ -97,10 +155,8 @@ def evaluate(hf_name: str, hf_config: str, card_id: str, save_dir: str = None, n
     df_gt = extract_unitxt_standardized(df_gt_raw)
     gt_fields = extract_task_data_fields(df_gt_raw)
 
-    # Step C: Compute Score
     score = compute_score(gt_fields, llm_fields)
 
-    # Step D: Save artifacts (optional)
     if save_dir:
         os.makedirs(save_dir, exist_ok=True)
         df_llm.to_csv(f"{save_dir}/llm_standardized.csv", index=False)
