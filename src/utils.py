@@ -16,46 +16,61 @@ def extract_json(text: str) -> dict | None:
     Returns:
         Parsed dict, or None if no valid JSON object is found.
     """
-    # Strip thinking blocks (e.g. Qwen3, DeepSeek) — closed and truncated variants.
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-    text = re.sub(r"<think>.*$", "", text, flags=re.DOTALL).strip()
-
-    # Prefer explicitly fenced JSON blocks.
-    fenced = re.search(r"```(?:json)?\s*(\{[^`]*\})\s*```", text, re.DOTALL)
-    if fenced:
-        try:
-            return json.loads(fenced.group(1))
-        except json.JSONDecodeError:
-            pass
-
-    # Walk character-by-character to find the outermost {...}.
-    start = text.find("{")
-    if start == -1:
+    def _find_json(s: str) -> dict | None:
+        """Extract the first valid JSON object from string s."""
+        fenced = re.search(r"```(?:json)?\s*(\{[^`]*\})\s*```", s, re.DOTALL)
+        if fenced:
+            try:
+                return json.loads(fenced.group(1))
+            except json.JSONDecodeError:
+                pass
+        start = s.find("{")
+        if start == -1:
+            return None
+        depth, in_string, escape_next = 0, False, False
+        for i, ch in enumerate(s[start:], start):
+            if escape_next:
+                escape_next = False
+                continue
+            if ch == "\\" and in_string:
+                escape_next = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(s[start: i + 1])
+                    except json.JSONDecodeError:
+                        break
         return None
 
-    depth, in_string, escape_next = 0, False, False
-    for i, ch in enumerate(text[start:], start):
-        if escape_next:
-            escape_next = False
-            continue
-        if ch == "\\" and in_string:
-            escape_next = True
-            continue
-        if ch == '"':
-            in_string = not in_string
-            continue
-        if in_string:
-            continue
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    return json.loads(text[start: i + 1])
-                except json.JSONDecodeError:
-                    break
-    return None
+    # Repair common malformed key pattern produced by small models:
+    # "key"_suffix": → "key_suffix":
+    text = re.sub(r'"(\w+)"_(\w+)"\s*:', r'"\1_\2":', text)
+
+    # 1. Try full text first (JSON may appear before any think block).
+    result = _find_json(text)
+    if result:
+        return result
+
+    # 2. Extract think-block content and search inside it.
+    think_match = re.search(r"<think>(.*?)</think>", text, re.DOTALL)
+    if think_match:
+        result = _find_json(think_match.group(1))
+        if result:
+            return result
+
+    # 3. Strip think blocks and try what remains.
+    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    cleaned = re.sub(r"<think>.*$", "", cleaned, flags=re.DOTALL).strip()
+    return _find_json(cleaned)
 
 
 def generate_code(mapping: dict) -> str:

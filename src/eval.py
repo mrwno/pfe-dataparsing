@@ -138,13 +138,16 @@ def compute_annotation_score(df_gt: pd.DataFrame, mapping: dict) -> float:
       - "classes"  (order-insensitive list comparison)
       - any key ending in "_type"  (e.g. text_type, text_a_type)
 
+    The denominator is the number of annotation fields present in the GT.
+    Fields missing from the prediction mapping are counted as mismatches.
+
     Args:
         df_gt: Ground-truth DataFrame produced by extract_unitxt_standardized.
         mapping: The predicted mapping dict from the standardize function.
 
     Returns:
-        Fraction of annotation fields whose predicted value matches GT (0.0–1.0).
-        Returns 1.0 when no comparable annotation fields are found.
+        Fraction of GT annotation fields correctly predicted (0.0–1.0).
+        Returns 1.0 only when GT has no annotation fields to compare.
     """
     if df_gt.empty:
         return 0.0
@@ -154,16 +157,19 @@ def compute_annotation_score(df_gt: pd.DataFrame, mapping: dict) -> float:
     def _is_annotation(k: str) -> bool:
         return k in ("type_of_class", "type_of_relation", "classes") or k.endswith("_type")
 
-    matches, total = 0, 0
-    for k, pred_val in mapping.items():
-        if not _is_annotation(k):
-            continue
-        gt_val = gt_row.get(k)
-        if gt_val is None:
-            continue  # field not present in GT, skip
-        total += 1
+    # All annotation fields that GT expects
+    gt_annotations = {k: v for k, v in gt_row.items() if _is_annotation(k)}
 
-        # classes: order-insensitive list comparison
+    if not gt_annotations:
+        return 1.0  # GT has no annotations to compare — no penalty
+
+    matches = 0
+    for k, gt_val in gt_annotations.items():
+        if k not in mapping:
+            continue  # missing from prediction → penalized via denominator
+
+        pred_val = mapping[k]
+
         if k == "classes":
             try:
                 gt_list = json.loads(gt_val) if isinstance(gt_val, str) else list(gt_val)
@@ -173,11 +179,10 @@ def compute_annotation_score(df_gt: pd.DataFrame, mapping: dict) -> float:
             except Exception:
                 pass
         else:
-            # string annotation: case-insensitive exact match
             if str(pred_val).lower().strip() == str(gt_val).lower().strip():
                 matches += 1
 
-    return matches / total if total > 0 else 1.0
+    return matches / len(gt_annotations)
 
 
 def get_raw_columns(hf_name: str, config: str = None) -> set:
@@ -221,7 +226,7 @@ def compute_mapping_recall(gt_fields: dict, pred_mapping: dict) -> float:
 
 
 def evaluate(hf_name: str, hf_config: str, card_id: str, save_dir: str | None = None,
-             n_samples: int = 5, standardize_fn=None) -> dict:
+             n_samples: int = 100, standardize_fn=None) -> dict:
     """
     Evaluate LLM standardization against Unitxt ground truth.
 
@@ -253,10 +258,17 @@ def evaluate(hf_name: str, hf_config: str, card_id: str, save_dir: str | None = 
 
     llm_fields = {k for k in mapping.keys() if k != "task"}
 
-    recipe = f"card=cards.{card_id}"
-    # streaming=True: only n_samples rows are ever read — the full split is never loaded.
-    gt_data = unitxt_load(recipe, split="train", streaming=True)
-    df_gt_raw = pd.DataFrame(list(gt_data.take(n_samples)))
+    recipe = f"card=cards.{card_id},loader_limit={n_samples}"
+    df_gt_raw = None
+    for _split in ("train", "test", "validation"):
+        try:
+            gt_data = unitxt_load(recipe, split=_split, streaming=True)
+            df_gt_raw = pd.DataFrame(list(gt_data.take(n_samples)))
+            break
+        except Exception:
+            continue
+    if df_gt_raw is None:
+        raise ValueError(f"No accessible split for Unitxt card {card_id}")
     
     
     gt_fields = extract_task_data_fields(df_gt_raw)

@@ -4,8 +4,10 @@ import os
 import sys
 import json
 import pandas as pd
+from functools import partial
 from src.eval import evaluate
 from src.standardize_local import load_standardized_dataset_local
+from src.standardize_api import load_standardized_dataset
 
 
 RESULTS_DIR = "results"
@@ -88,23 +90,29 @@ def main():
     print(df_results[["dataset", "score", "llm_fields", "gt_fields"]].to_string(index=False))
 
 
+SIMULATED_LOCAL_MODEL_ID = "google/gemma-3n-e4b-it"
+
+
 def test_local_model():
     """
-    Run evaluation tests on GLUE datasets using the local Gemma model and save results.
+    Run evaluation tests on GLUE datasets simulating a local model via the API.
 
-    Mirrors main() but routes inference through load_standardized_dataset_local
-    instead of the OpenRouter API. No API key is required.
+    Uses google/gemma-3n-e4b-it through OpenRouter to mimic local inference
+    without the overhead of running a model on device.
     """
+    check_api_key()
     results_dir = "results_local"
     os.makedirs(results_dir, exist_ok=True)
 
-    print(f"Testing LOCAL model on {len(GLUE_DATASETS)} GLUE datasets: {[d['card_id'] for d in GLUE_DATASETS]}")
+    standardize_fn = partial(load_standardized_dataset, model_id=SIMULATED_LOCAL_MODEL_ID)
+
+    print(f"Testing {SIMULATED_LOCAL_MODEL_ID} on {len(GLUE_DATASETS)} GLUE datasets: {[d['card_id'] for d in GLUE_DATASETS]}")
 
     results = []
 
     for exp in GLUE_DATASETS:
         card_id = exp["card_id"]
-        print(f"\n{'='*40}\nProcessing (local): {card_id}")
+        print(f"\n{'='*40}\nProcessing (simulated local): {card_id}")
 
         try:
             result = evaluate(
@@ -112,7 +120,7 @@ def test_local_model():
                 hf_config=exp["hf_config"],
                 card_id=card_id,
                 save_dir=f"{results_dir}/{card_id}",
-                standardize_fn=load_standardized_dataset_local,
+                standardize_fn=standardize_fn,
             )
 
             result_for_csv = {k: v for k, v in result.items() if k not in ("df_llm", "df_gt")}
@@ -152,7 +160,7 @@ if __name__ == "__main__":
         "--mode",
         choices=["api", "local"],
         default="api",
-        help="'api' uses OpenRouter (default), 'local' uses the local Gemma model",
+        help="'api' uses OpenRouter with the default model, 'local' simulates local via google/gemma-3n-e4b-it on OpenRouter",
     )
     args = parser.parse_args()
 

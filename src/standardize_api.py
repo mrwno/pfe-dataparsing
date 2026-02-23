@@ -1,5 +1,6 @@
 """API-based dataset standardization for Unitxt using OpenRouter."""
 import os
+import re
 import json
 from datasets import load_dataset
 from unitxt import get_from_catalog
@@ -7,7 +8,7 @@ from openai import OpenAI
 from src.utils import generate_code, score_mapping
 
 
-MODEL_ID = "anthropic/claude-opus-4.6"
+DEFAULT_MODEL_ID = "anthropic/claude-opus-4.6"
 
 TASK_MAPPING = {
     "classification": "tasks.classification.binary",
@@ -32,7 +33,8 @@ def _get_client() -> OpenAI:
     return OpenAI(base_url="https://openrouter.ai/api/v1", api_key=api_key)
 
 
-def _infer_mapping(features: dict, sample_rows: list, instruction: str = None) -> dict | None:
+def _infer_mapping(features: dict, sample_rows: list, instruction: str = None,
+                   model_id: str | None = None) -> dict | None:
     """
     Use OpenRouter API to infer the Unitxt field mapping.
 
@@ -40,11 +42,13 @@ def _infer_mapping(features: dict, sample_rows: list, instruction: str = None) -
         features: Dictionary of dataset features with column names and types.
         sample_rows: List of sample data rows from the dataset.
         instruction: Optional additional context for the LLM.
+        model_id: OpenRouter model ID. Defaults to DEFAULT_MODEL_ID.
 
     Returns:
         Parsed mapping dict, or None if inference fails.
     """
     client = _get_client()
+    model_id = model_id or DEFAULT_MODEL_ID
     column_names = list(features.keys())
 
     system_message = (
@@ -87,25 +91,57 @@ def _infer_mapping(features: dict, sample_rows: list, instruction: str = None) -
     - For each text column you include, add a companion "<name>_type" key with a literal string describing its semantic role.
     - For paired-text tasks replace "type_of_class" with "type_of_relation".
     - "classes" must be a JSON array of strings, never integers.
+    - All literal annotation values ("classes" items, "type_of_class", "type_of_relation", and any "<name>_type" value) must use spaces, NOT underscores or hyphens (e.g. "not equivalent" not "not_equivalent", "semantic equivalence" not "semantic-equivalence", "sentence pair" not "sentence_pair"). This rule does NOT apply to raw column name references.
     - "label" must be the raw column name (a string), not a class name.
     """
 
+    # Only Claude and OpenAI models reliably support json_object format
+    _JSON_FORMAT_PREFIXES = ("anthropic/", "openai/")
+    use_json_format = any(model_id.startswith(p) for p in _JSON_FORMAT_PREFIXES)
+
+    _messages = [
+        {"role": "system", "content": system_message},
+        {"role": "user", "content": user_prompt},
+    ]
+
     try:
-        completion = client.chat.completions.create(
-            model=MODEL_ID,
-            messages=[
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": user_prompt},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.0,
-        )
+        if use_json_format:
+            completion = client.chat.completions.create(
+                model=model_id,
+                messages=_messages,
+                response_format={"type": "json_object"},
+                temperature=0.0,
+            )
+        else:
+            completion = client.chat.completions.create(
+                model=model_id,
+                messages=_messages,
+                temperature=0.0,
+            )
         response_content = completion.choices[0].message.content
-        if "```json" in response_content:
-            response_content = response_content.split("```json")[1].split("```")[0].strip()
-        elif "```" in response_content:
-            response_content = response_content.split("```")[1].split("```")[0].strip()
-        parsed = json.loads(response_content)
+
+        # Try progressively more lenient extraction
+        parsed = None
+        for attempt in (response_content,):
+            # 1. Strip markdown fences
+            if "```json" in attempt:
+                attempt = attempt.split("```json")[1].split("```")[0].strip()
+            elif "```" in attempt:
+                attempt = attempt.split("```")[1].split("```")[0].strip()
+            try:
+                parsed = json.loads(attempt)
+                break
+            except json.JSONDecodeError:
+                pass
+            # 2. Extract first {...} block via regex
+            m = re.search(r"\{.*\}", attempt, re.DOTALL)
+            if m:
+                try:
+                    parsed = json.loads(m.group())
+                    break
+                except json.JSONDecodeError:
+                    pass
+
         if parsed and "task" in parsed:
             return parsed
     except Exception as e:
@@ -113,13 +149,46 @@ def _infer_mapping(features: dict, sample_rows: list, instruction: str = None) -
     return None
 
 
-def standardize(dataset, instruction: str = None) -> dict:
+_FALLBACK_SPLITS = ["train", "test", "validation"]
+
+
+def _load_split(name: str, config: str | None) -> object:
+    """Load a HuggingFace dataset trying train → test → validation.
+
+    If config is None and the dataset requires one, the first suggested
+    config is extracted from the error message and retried automatically.
+    """
+    last_err = None
+    for split in _FALLBACK_SPLITS:
+        try:
+            return load_dataset(name, config, split=split, streaming=True) if config else \
+                   load_dataset(name, split=split, streaming=True)
+        except Exception as e:
+            err_str = str(e)
+            if config is None and "Config name is missing" in err_str:
+                # Extract suggested configs (quoted names in the error message)
+                candidates = [c for c in re.findall(r"'([^']+)'", err_str) if c != name]
+                if candidates:
+                    try:
+                        return load_dataset(name, candidates[0], split=split, streaming=True)
+                    except Exception as e2:
+                        last_err = e2
+                else:
+                    last_err = e
+                    break  # No candidates — retrying splits won't help
+            else:
+                last_err = e
+    raise ValueError(f"No accessible split for {name}/{config}: {last_err}")
+
+
+def standardize(dataset, instruction: str = None, model_id: str | None = None) -> dict:
     """
     Standardize a HuggingFace dataset into Unitxt format using the OpenRouter API.
 
     Args:
         dataset: Dataset name (str) or dataset object.
         instruction: Optional additional context for the LLM.
+        model_id: OpenRouter model ID. Defaults to DEFAULT_MODEL_ID.
 
     Returns:
         Dictionary with keys: mapping, code, score, dataset.
@@ -127,7 +196,12 @@ def standardize(dataset, instruction: str = None) -> dict:
     ds = load_dataset(dataset, split="train", streaming=True) if isinstance(dataset, str) else dataset
     features = ds.features
     samples = list(ds.take(5))
-    mapping = _infer_mapping(features, samples, instruction)
+    # features can be None for some streaming datasets — infer from first row
+    if features is None and samples:
+        features = {k: type(v).__name__ for k, v in samples[0].items()}
+    if not features:
+        return {"mapping": {}, "code": "# Error: no features", "score": 0.0, "dataset": ds}
+    mapping = _infer_mapping(features, samples, instruction, model_id=model_id)
 
     if mapping is None:
         print(f"Warning: Failed to infer mapping for columns: {list(features.keys())}")
@@ -145,7 +219,9 @@ def standardize(dataset, instruction: str = None) -> dict:
     return {"mapping": mapping, "code": generate_code(mapping), "score": sc, "dataset": ds}
 
 
-def load_standardized_dataset(dataset_name: str, config: str = None, instruction: str = None) -> dict:
+def load_standardized_dataset(dataset_name: str, config: str | None = None,
+                              instruction: str | None = None,
+                              model_id: str | None = None) -> dict:
     """
     Load and standardize a dataset using the OpenRouter API.
 
@@ -153,10 +229,10 @@ def load_standardized_dataset(dataset_name: str, config: str = None, instruction
         dataset_name: HuggingFace dataset name.
         config: Optional dataset configuration name.
         instruction: Optional additional context for the LLM.
+        model_id: OpenRouter model ID. Defaults to DEFAULT_MODEL_ID.
 
     Returns:
         Dictionary with keys: mapping, code, score, dataset.
     """
-    ds = load_dataset(dataset_name, config, split="train", streaming=True) if config else \
-         load_dataset(dataset_name, split="train", streaming=True)
-    return standardize(ds, instruction)
+    ds = _load_split(dataset_name, config)
+    return standardize(ds, instruction, model_id=model_id)

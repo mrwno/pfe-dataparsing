@@ -2,20 +2,47 @@
 Baseline methods for dataset column mapping.
 Compares against LLM-based standardization approach.
 """
+import re
 from datasets import load_dataset
 from sentence_transformers import SentenceTransformer, util
 from src.utils import generate_code
+
+_FALLBACK_SPLITS = ["train", "test", "validation"]
+
+
+def _load_split(name: str, config: str | None) -> object:
+    """Load a HuggingFace dataset trying train → test → validation.
+
+    If config is None and the dataset requires one, the first suggested
+    config is extracted from the error message and retried automatically.
+    """
+    last_err = None
+    for split in _FALLBACK_SPLITS:
+        try:
+            return load_dataset(name, config, split=split, streaming=True) if config else \
+                   load_dataset(name, split=split, streaming=True)
+        except Exception as e:
+            err_str = str(e)
+            if config is None and "Config name is missing" in err_str:
+                candidates = [c for c in re.findall(r"'([^']+)'", err_str) if c != name]
+                if candidates:
+                    try:
+                        return load_dataset(name, candidates[0], split=split, streaming=True)
+                    except Exception as e2:
+                        last_err = e2
+                else:
+                    last_err = e
+                    break
+            else:
+                last_err = e
+    raise ValueError(f"No accessible split for {name}/{config}: {last_err}")
 
 
 FIELD_SYNONYMS = {
     "text": ["text", "sentence", "review", "body", "content", "tweet", "document"],
     "label": ["label", "target", "score", "class", "category", "sentiment"],
-    "text_a": ["text_a", "premise", "sentence1", "context", "source"],
-    "text_b": ["text_b", "hypothesis", "sentence2", "response"],
-    "question": ["question", "query", "prompt"],
-    "answer": ["answer", "response", "output"],
-    "input": ["input", "source", "src"],
-    "output": ["output", "target", "tgt", "reference"],
+    "text_a": ["text_a", "premise", "sentence1", "context", "source","question", "query", "prompt"],
+    "text_b": ["text_b", "hypothesis", "sentence2", "response", "answer", "response", "output"],
 }
 
 STANDARD_FIELDS = ["text", "label", "text_a", "text_b", "question", "answer", "input", "output"]
@@ -70,12 +97,15 @@ def baseline_keyword_match(dataset, config: str = None) -> dict:
         Dictionary containing mapping, code, score, and dataset.
     """
     if isinstance(dataset, str):
-        ds = load_dataset(dataset, config, split="train", streaming=True) if config else \
-             load_dataset(dataset, split="train", streaming=True)
+        ds = _load_split(dataset, config)
     else:
         ds = dataset
-    
-    columns = set(ds.features.keys())
+
+    features = ds.features
+    if features is None:
+        sample = next(iter(ds))
+        features = {k: type(v).__name__ for k, v in sample.items()}
+    columns = set(features.keys())
     mapping = {}
 
     for field, synonyms in FIELD_SYNONYMS.items():
@@ -109,12 +139,15 @@ def baseline_embedding_match(dataset, config: str = None, threshold: float = 0.6
         Dictionary containing mapping, code, score, and dataset.
     """
     if isinstance(dataset, str):
-        ds = load_dataset(dataset, config, split="train", streaming=True) if config else \
-             load_dataset(dataset, split="train", streaming=True)
+        ds = _load_split(dataset, config)
     else:
         ds = dataset
-    
-    columns = list(ds.features.keys())
+
+    features = ds.features
+    if features is None:
+        sample = next(iter(ds))
+        features = {k: type(v).__name__ for k, v in sample.items()}
+    columns = list(features.keys())
     model = _get_embedding_model()
 
     col_embeddings = model.encode(columns, convert_to_tensor=True)

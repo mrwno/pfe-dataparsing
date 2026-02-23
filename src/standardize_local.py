@@ -86,21 +86,38 @@ YOUR MISSION:
    - "label": raw column name containing the target label.
 4. Return ONLY a valid JSON object — no explanation, no markdown.
 
-OUTPUT FORMAT (all tasks):
+OUTPUT FORMAT — choose EXACTLY ONE of the two formats below:
+
+If the task has ONE text column (e.g. classification, generation):
 {{
     "task": "<detected_task_type>",
-    "<your_chosen_name_for_text_col>": "<raw_column_name>",
-    "<your_chosen_name_for_text_col>_type": "<semantic_type_literal>",
+    "text": "<raw_column_name>",
+    "text_type": "<semantic_type_literal>",
     "classes": ["<class_name_0>", "<class_name_1>"],
-    "type_of_class" or "type_of_relation": "<sentiment|topic|...>",
+    "type_of_class": "<sentiment|topic|...>",
     "label": "<raw_column_name_with_label>"
 }}
 
+If the task has TWO text columns (e.g. NLI, similarity):
+{{
+    "task": "<detected_task_type>",
+    "text_a": "<raw_column_name_1>",
+    "text_a_type": "<semantic_type_literal>",
+    "text_b": "<raw_column_name_2>",
+    "text_b_type": "<semantic_type_literal>",
+    "classes": ["<class_name_0>", "<class_name_1>"],
+    "type_of_relation": "<entailment|paraphrase|...>",
+    "label": "<raw_column_name_with_label>"
+}}
+
+IMPORTANT: NEVER mix both formats. If you use "text", do NOT add "text_a" or "text_b". If you use "text_a"/"text_b", do NOT add "text".
+
 RULES:
-- The chosen field names for the text columns must respect the same mapping as Unitxt standard fields.
-- For each text column you include, add a companion "<name>_type" key with a literal string describing its semantic role.
+- Use ONLY the exact key names shown above. NEVER use placeholder names like "chosen_text_field_name".
+- For each text field you include, add a companion "<name>_type" key (e.g. "text_type", "text_a_type") with a literal string describing its semantic role.
 - For paired-text tasks instead of using "type_of_class", use "type_of_relation".
-- "classes" must be a JSON array of strings, never integers.
+- "classes" must be a JSON array of the actual human-readable class NAME strings found in the dataset — NEVER use integers or raw label numbers (e.g. use ["positive", "negative"] not ["0", "1"]).
+- All literal annotation values ("classes" items, "type_of_class", "type_of_relation", and any "<name>_type" value) must use spaces, NOT underscores or hyphens (e.g. "not equivalent" not "not_equivalent"). This rule does NOT apply to raw column name references.
 - "label" must be the raw column name (a string), not a class name."""
 
     messages = [
