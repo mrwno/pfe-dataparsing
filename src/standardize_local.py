@@ -1,8 +1,36 @@
 """Local HuggingFace model-based dataset standardization for Unitxt."""
 import json
+import re
 from datasets import load_dataset
 from unitxt import get_from_catalog
 from src.utils import extract_json, generate_code, score_mapping
+
+
+_FALLBACK_SPLITS = ["train", "test", "validation"]
+
+
+def _load_split(name: str, config: str | None) -> object:
+    """Load a HuggingFace dataset trying train → test → validation."""
+    last_err = None
+    for split in _FALLBACK_SPLITS:
+        try:
+            return load_dataset(name, config, split=split, streaming=True) if config else \
+                   load_dataset(name, split=split, streaming=True)
+        except Exception as e:
+            err_str = str(e)
+            if config is None and "Config name is missing" in err_str:
+                candidates = [c for c in re.findall(r"'([^']+)'", err_str) if c != name]
+                if candidates:
+                    try:
+                        return load_dataset(name, candidates[0], split=split, streaming=True)
+                    except Exception as e2:
+                        last_err = e2
+                else:
+                    last_err = e
+                    break
+            else:
+                last_err = e
+    raise ValueError(f"No accessible split for {name}/{config}: {last_err}")
 
 
 LOCAL_MODEL_ID = "Qwen/Qwen3-0.6B"
@@ -151,7 +179,7 @@ def standardize_local(dataset, instruction: str | None = None, model_id: str = L
     Returns:
         Dictionary with keys: mapping, code, score, dataset.
     """
-    ds = load_dataset(dataset, split="train", streaming=True) if isinstance(dataset, str) else dataset
+    ds = _load_split(dataset, None) if isinstance(dataset, str) else dataset
     features = ds.features
     samples = list(ds.take(5))
     mapping = _infer_mapping_local(features, samples, instruction, model_id)
@@ -187,6 +215,5 @@ def load_standardized_dataset_local(
     Returns:
         Dictionary with keys: mapping, code, score, dataset.
     """
-    ds = load_dataset(dataset_name, config, split="train", streaming=True) if config else \
-         load_dataset(dataset_name, split="train", streaming=True)
+    ds = _load_split(dataset_name, config)
     return standardize_local(ds, instruction, model_id)

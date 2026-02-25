@@ -187,8 +187,8 @@ def compute_annotation_score(df_gt: pd.DataFrame, mapping: dict) -> float:
 
 def get_raw_columns(hf_name: str, config: str = None) -> set:
     """Return the set of column names from a HuggingFace dataset."""
-    ds = load_dataset(hf_name, config, split="train", streaming=True) if config else \
-         load_dataset(hf_name, split="train", streaming=True)
+    from src.standardize_api import _load_split
+    ds = _load_split(hf_name, config)
     return set(ds.features.keys())
 
 

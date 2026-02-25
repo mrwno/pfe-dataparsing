@@ -169,7 +169,8 @@ def run_evaluation(datasets: list = None, methods: dict = None) -> pd.DataFrame:
                 score        = result["score"]
                 struct_score = result["struct_score"]
                 annot_score  = result["annot_score"]
-                print(f"score={score:.3f}  struct={struct_score:.3f}  annot={annot_score:.3f}")
+                print(f"Mapping: {result['mapping']}")
+                print(f"  score={score:.3f}  struct={struct_score:.3f}  annot={annot_score:.3f}")
             except Exception as e:
                 score = struct_score = annot_score = None
                 print(f"ERROR: {e}")
