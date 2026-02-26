@@ -19,15 +19,15 @@ def _load_split(name: str, config: str | None) -> object:
     last_err = None
     for split in _FALLBACK_SPLITS:
         try:
-            return load_dataset(name, config, split=split, streaming=True) if config else \
-                   load_dataset(name, split=split, streaming=True)
+            return load_dataset(name, config, split=split, streaming=True, trust_remote_code=True) if config else \
+                   load_dataset(name, split=split, streaming=True, trust_remote_code=True)
         except Exception as e:
             err_str = str(e)
             if config is None and "Config name is missing" in err_str:
                 candidates = [c for c in re.findall(r"'([^']+)'", err_str) if c != name]
                 if candidates:
                     try:
-                        return load_dataset(name, candidates[0], split=split, streaming=True)
+                        return load_dataset(name, candidates[0], split=split, streaming=True, trust_remote_code=True)
                     except Exception as e2:
                         last_err = e2
                 else:
