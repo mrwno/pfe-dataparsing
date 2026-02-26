@@ -3,7 +3,7 @@ import json
 import re
 from datasets import load_dataset
 from unitxt import get_from_catalog
-from src.utils import extract_json, generate_code, score_mapping
+from .utils import extract_json, generate_code, score_mapping
 
 
 _FALLBACK_SPLITS = ["train", "test", "validation"]

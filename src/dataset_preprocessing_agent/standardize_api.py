@@ -5,7 +5,7 @@ import json
 from datasets import load_dataset
 from unitxt import get_from_catalog
 from openai import OpenAI
-from src.utils import generate_code, score_mapping
+from .utils import generate_code, score_mapping
 
 
 DEFAULT_MODEL_ID = "anthropic/claude-opus-4.6"

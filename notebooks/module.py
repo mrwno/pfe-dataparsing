@@ -9,11 +9,11 @@ import matplotlib.pyplot as plt
 import logging
 import warnings
 from functools import partial
-from src.eval import evaluate
-from src.eval_ts import evaluate_ts
-from src.baselines import baseline_keyword_match, baseline_embedding_match
-from src.standardize_api import load_standardized_dataset
-from src.standardize_local import load_standardized_dataset_local
+from dataset_preprocessing_agent.eval import evaluate
+from dataset_preprocessing_agent.eval_ts import evaluate_ts
+from dataset_preprocessing_agent.baselines import baseline_keyword_match, baseline_embedding_match
+from dataset_preprocessing_agent.standardize_api import load_standardized_dataset
+from dataset_preprocessing_agent.standardize_local import load_standardized_dataset_local
 
 # Allow Unitxt cards that use FilterByExpression
 os.environ.setdefault("UNITXT_ALLOW_UNVERIFIED_CODE", "True")

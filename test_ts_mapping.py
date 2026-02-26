@@ -17,7 +17,7 @@ import os
 sys.path.insert(0, os.path.dirname(__file__))
 
 from datasets import load_dataset
-from src.eval_ts import get_ts_gt_mapping
+from dataset_preprocessing_agent.eval_ts import get_ts_gt_mapping
 from notebooks.module import discover_datasets_ts
 
 

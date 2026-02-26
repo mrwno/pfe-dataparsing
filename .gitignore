@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+
+# Build / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Env
+.env
+.env.*
+*.key
+
+# IDE
+.vscode/
+
+# Project-specific
+results/
+tasksource/
+notebooks/.ipynb_checkpoints/

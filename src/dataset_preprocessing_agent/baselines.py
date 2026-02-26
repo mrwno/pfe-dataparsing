@@ -5,7 +5,7 @@ Compares against LLM-based standardization approach.
 import re
 from datasets import load_dataset
 from sentence_transformers import SentenceTransformer, util
-from src.utils import generate_code
+from .utils import generate_code
 
 _FALLBACK_SPLITS = ["train", "test", "validation"]
 

@@ -5,7 +5,7 @@ import json
 import pandas as pd
 from datasets import load_dataset
 from unitxt import load_dataset as unitxt_load
-from src.standardize_api import load_standardized_dataset
+from .standardize_api import load_standardized_dataset
 
 
 UNITXT_METADATA_FIELDS = {'metadata', 'data_classification_policy'}

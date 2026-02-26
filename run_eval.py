@@ -5,9 +5,9 @@ import sys
 import json
 import pandas as pd
 from functools import partial
-from src.eval import evaluate
-from src.standardize_local import load_standardized_dataset_local
-from src.standardize_api import load_standardized_dataset
+from dataset_preprocessing_agent.eval import evaluate
+from dataset_preprocessing_agent.standardize_local import load_standardized_dataset_local
+from dataset_preprocessing_agent.standardize_api import load_standardized_dataset
 
 
 RESULTS_DIR = "results"

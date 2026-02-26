@@ -1,8 +1,8 @@
 """Evaluation functions using tasksource preprocessing objects as ground truth."""
 
 import pandas as pd
-from src.standardize_api import load_standardized_dataset
-from src.eval import apply_llm_mapping
+from .standardize_api import load_standardized_dataset
+from .eval import apply_llm_mapping
 
 
 # Default field values in tasksource dataclasses.
